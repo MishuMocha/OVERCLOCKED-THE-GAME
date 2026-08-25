@@ -3583,17 +3583,9 @@ export default function App() {
                             <h3 className="font-bold text-sm md:text-base font-display tracking-wide text-white">
                               {item.name}
                             </h3>
-                            <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-slate-950 text-slate-400">
-                              T{currentTierStr}
-                            </span>
                             {count > 0 && (
                               <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-slate-950 text-cyan-300 font-bold">
                                 LVL {count}
-                              </span>
-                            )}
-                            {milestoneMultiplier > 1 && (
-                              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-md bg-amber-950/90 border border-amber-500/50 text-amber-300 font-bold">
-                                Milestone: {milestoneMultiplier}x
                               </span>
                             )}
                             {hardwareMult > 1 && (
@@ -3603,24 +3595,14 @@ export default function App() {
                             )}
                           </div>
 
-                          {/* Primary Positive Yield & Milestone Tracking */}
-                          <div className="flex items-center gap-2.5 mt-1 flex-wrap">
+                          {/* Primary Positive Yield */}
+                          <div className="flex items-center gap-2 mt-1 flex-wrap">
                             <span className="text-xs font-mono font-bold text-emerald-400 flex items-center gap-1">
                               +{formatOps(effectiveRateEach)} OPS/s
                             </span>
                             {count > 0 && (
                               <span className="text-[10px] font-mono text-slate-500">
                                 (+{formatOps(effectiveRateEach * count)}/s total)
-                              </span>
-                            )}
-                            <span className="text-slate-600 text-[10px]">•</span>
-                            {milestoneInfo.isMax ? (
-                              <span className="text-[10px] font-mono text-amber-400 font-bold">
-                                ★ MAX MILESTONE (128x)
-                              </span>
-                            ) : (
-                              <span className="text-[10px] font-mono text-slate-400">
-                                Next at {milestoneInfo.nextMilestone} ({count}/{milestoneInfo.nextMilestone})
                               </span>
                             )}
                           </div>
@@ -3960,7 +3942,9 @@ export default function App() {
         const buyAmount = multiInfo.isMax ? multiInfo.actualBuyCount : multiInfo.countToBuy;
         const progressPercent = Math.min(100, (totalOps / Math.max(1, cost)) * 100);
         const hardwareMult = getHardwareMultiplier(item.id, purchasedSubUpgrades);
-        const effectiveRateEach = item.opsIncrease * hardwareMult;
+        const milestoneInfo = getNextHardwareMilestone(count);
+        const milestoneMultiplier = milestoneInfo.currentMultiplier;
+        const effectiveRateEach = item.opsIncrease * hardwareMult * milestoneMultiplier;
         const IconComponent = item.icon;
 
         return (
@@ -4005,27 +3989,46 @@ export default function App() {
 
             {/* Live Metrics Grid */}
             <div className="p-3 rounded-lg bg-slate-900/90 border border-slate-800 text-xs font-mono space-y-1.5 mb-2.5">
-              <div className="flex justify-between text-slate-400">
-                <span>Base Unit Output:</span>
-                <strong className="text-emerald-400">+{item.opsIncrease}.00 OPS/s</strong>
+              <div className="flex justify-between items-center gap-2 text-slate-400">
+                <span className="whitespace-nowrap">Base Unit Output:</span>
+                <strong className="text-emerald-400 whitespace-nowrap">+{item.opsIncrease}.00 OPS/s</strong>
               </div>
-              <div className="flex justify-between text-slate-400">
-                <span>Firmware Multiplier:</span>
-                <strong className={hardwareMult > 1 ? 'text-purple-300' : 'text-slate-300'}>
+              <div className="flex justify-between items-center gap-2 text-slate-400">
+                <span className="whitespace-nowrap">Firmware Multiplier:</span>
+                <strong className={`whitespace-nowrap ${hardwareMult > 1 ? 'text-purple-300' : 'text-slate-300'}`}>
                   {hardwareMult}x Multiplier
                 </strong>
               </div>
-              <div className="flex justify-between text-slate-400">
-                <span>Current Total Output:</span>
-                <strong className="text-emerald-300 font-bold">
+              <div className="flex justify-between items-center gap-2 text-slate-400">
+                <span className="whitespace-nowrap">Milestone Bonus:</span>
+                <strong className={`whitespace-nowrap ${milestoneMultiplier > 1 ? 'text-amber-300' : 'text-slate-300'}`}>
+                  {milestoneMultiplier}x Multiplier
+                </strong>
+              </div>
+              <div className="flex justify-between items-center gap-2 text-slate-400">
+                <span className="whitespace-nowrap">Next Milestone:</span>
+                <strong className={`whitespace-nowrap ${milestoneInfo.isMax ? 'text-amber-400 font-bold' : 'text-slate-300'}`}>
+                  {milestoneInfo.isMax ? `Maxed (${count} / 500)` : `${count} / ${milestoneInfo.nextMilestone}`}
+                </strong>
+              </div>
+              <div className="flex justify-between items-center gap-2 text-slate-400">
+                <span className="whitespace-nowrap">Current Total Output:</span>
+                <strong className="text-emerald-300 font-bold whitespace-nowrap">
                   +{formatOps(effectiveRateEach * count)} OPS/s
                 </strong>
               </div>
-              <div className="flex justify-between text-slate-400 pt-1 border-t border-slate-800/70">
-                <span>Output After Buying (+{buyAmount}):</span>
-                <strong className="text-cyan-300 font-bold">
-                  +{formatOps(effectiveRateEach * (count + (buyAmount || 1)))} OPS/s
-                </strong>
+              <div className="flex justify-between items-center gap-2 text-slate-400 pt-1 border-t border-slate-800/70">
+                <span className="whitespace-nowrap">Output After Buying (+{buyAmount}):</span>
+                {(() => {
+                  const nextCount = count + (buyAmount || 1);
+                  const nextMilestoneMultiplier = getHardwareMilestoneMultiplier(nextCount);
+                  const nextEffectiveRateEach = item.opsIncrease * hardwareMult * nextMilestoneMultiplier;
+                  return (
+                    <strong className="text-cyan-300 font-bold whitespace-nowrap">
+                      +{formatOps(nextEffectiveRateEach * nextCount)} OPS/s
+                    </strong>
+                  );
+                })()}
               </div>
             </div>
 
