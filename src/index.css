@@ -1,0 +1,109 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    font-family: 'JetBrains Mono', monospace;
+    background-color: #070a12;
+    color: #e2e8f0;
+    overflow-x: hidden;
+  }
+
+  h1, h2, h3, .font-display {
+    font-family: 'Chakra Petch', sans-serif;
+  }
+
+  /* Custom Cyberpunk Scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: rgba(2, 6, 23, 0.7);
+    border-radius: 4px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(0, 242, 254, 0.35);
+    border-radius: 4px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 242, 254, 0.6);
+  }
+}
+
+@keyframes pulseGlow {
+  0%, 100% {
+    box-shadow: 0 0 15px rgba(0, 242, 254, 0.35), inset 0 0 15px rgba(0, 242, 254, 0.2);
+  }
+  50% {
+    box-shadow: 0 0 30px rgba(0, 242, 254, 0.6), inset 0 0 25px rgba(0, 242, 254, 0.4);
+  }
+}
+
+@keyframes scanline {
+  0% {
+    transform: translateY(-100%);
+  }
+  100% {
+    transform: translateY(1000%);
+  }
+}
+
+.circuit-bg {
+  background-image: 
+    radial-gradient(circle at 50% 30%, rgba(0, 242, 254, 0.08) 0%, transparent 60%),
+    radial-gradient(circle at 80% 80%, rgba(0, 255, 135, 0.05) 0%, transparent 50%),
+    linear-gradient(to right, rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+  background-size: 100% 100%, 100% 100%, 32px 32px, 32px 32px;
+}
+
+.glow-chip {
+  animation: pulseGlow 3s ease-in-out infinite;
+}
+
+@keyframes floatUp {
+  0% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-40px) scale(1.2);
+  }
+}
+
+.animate-float-up {
+  animation: floatUp 0.85s ease-out forwards;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.18s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes glitchPulse {
+  0%, 100% {
+    filter: drop-shadow(0 0 12px #fbbf24) drop-shadow(0 0 25px #00f2fe);
+    transform: scale(1);
+  }
+  50% {
+    filter: drop-shadow(0 0 22px #ec4899) drop-shadow(0 0 35px #a855f7);
+    transform: scale(1.08) rotate(3deg);
+  }
+}
+
+.animate-glitch {
+  animation: glitchPulse 1.2s ease-in-out infinite alternate;
+}
+
+

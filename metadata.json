@@ -1,0 +1,6 @@
+{
+  "name": "Overclocked: The Silicon Empire",
+  "description": "A cyberpunk-themed tech lab idle clicker game where you synthesize silicon chips, upgrade hardware tiers, and research firmware overclocks.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
