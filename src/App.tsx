@@ -45,7 +45,10 @@ import {
   AlertTriangle,
   Trophy,
   Globe,
-  Star
+  Star,
+  BarChart3,
+  PieChart,
+  Timer
 } from 'lucide-react';
 import { audioEngine } from './audio';
 
@@ -191,6 +194,47 @@ export const QUANTUM_PERKS: QuantumPerk[] = [
 ];
 
 export type BuyMultiplier = 1 | 5 | 10 | 'max';
+
+// Hardware Quantity Milestones (2x output multiplier per threshold achieved)
+export const HARDWARE_MILESTONES = [10, 25, 50, 100, 150, 250, 500] as const;
+
+export const getHardwareMilestoneMultiplier = (count: number): number => {
+  const reached = HARDWARE_MILESTONES.filter((m) => count >= m).length;
+  return Math.pow(2, reached);
+};
+
+export const getNextHardwareMilestone = (count: number): {
+  currentMultiplier: number;
+  nextMilestone: number | null;
+  prevMilestone: number;
+  isMax: boolean;
+} => {
+  const currentMultiplier = getHardwareMilestoneMultiplier(count);
+  const nextMilestone = HARDWARE_MILESTONES.find((m) => count < m) || null;
+  const reachedMilestones = HARDWARE_MILESTONES.filter((m) => count >= m);
+  const prevMilestone = reachedMilestones.length > 0 ? reachedMilestones[reachedMilestones.length - 1] : 0;
+  return {
+    currentMultiplier,
+    nextMilestone,
+    prevMilestone,
+    isMax: nextMilestone === null,
+  };
+};
+
+export const formatDuration = (ms: number): string => {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  const parts: string[] = [];
+  if (days > 0) parts.push(`${days}d`);
+  if (hours > 0 || days > 0) parts.push(`${hours}h`);
+  if (minutes > 0 || hours > 0 || days > 0) parts.push(`${minutes}m`);
+  parts.push(`${seconds}s`);
+  return parts.join(' ');
+};
 
 // Multi-buy cost calculation helpers
 export const getUpgradeMultiCost = (baseCost: number, startCount: number, amount: number): number => {
@@ -1560,6 +1604,13 @@ export default function App() {
   const [achievementCategory, setAchievementCategory] = useState<'all' | 'clicks' | 'ops' | 'rebirth' | 'glitch' | 'hardware'>('all');
   const [achievementToast, setAchievementToast] = useState<{ id: string; title: string; description: string } | null>(null);
 
+  // Statistics & Ledger State
+  const [runStartTime, setRunStartTime] = useState<number>(() => Date.now());
+  const [firstPlayTime, setFirstPlayTime] = useState<number>(() => Date.now());
+  const [lifetimeManualOps, setLifetimeManualOps] = useState<number>(0);
+  const [lifetimePassiveOps, setLifetimePassiveOps] = useState<number>(0);
+  const [showStatsModal, setShowStatsModal] = useState<boolean>(false);
+
   // References for timing and Web Audio
   const totalOpsRef = useRef<number>(0);
   const lifetimeOpsRef = useRef<number>(0);
@@ -1571,6 +1622,12 @@ export default function App() {
   const isHoldingRef = useRef<boolean>(false);
   const autofireTimerRef = useRef<number | null>(null);
   const lastPointerCoordsRef = useRef<{ clientX: number; clientY: number } | null>(null);
+
+  // Statistics references
+  const runStartTimeRef = useRef<number>(Date.now());
+  const firstPlayTimeRef = useRef<number>(Date.now());
+  const lifetimeManualOpsRef = useRef<number>(0);
+  const lifetimePassiveOpsRef = useRef<number>(0);
 
   // Heat & Overheat references
   const heatLevelRef = useRef<number>(0);
@@ -1710,7 +1767,8 @@ export default function App() {
       const baseTotal = UPGRADES.reduce((total, item) => {
         const count = counts[item.id] || 0;
         const mult = getHardwareMultiplier(item.id, purchased);
-        return total + (count * item.opsIncrease * mult);
+        const milestoneMult = getHardwareMilestoneMultiplier(count);
+        return total + (count * item.opsIncrease * mult * milestoneMult);
       }, 0);
 
       const cryoLevel = getPerkLevel('perk-cryo', perksMap);
@@ -1859,6 +1917,10 @@ export default function App() {
         quantumFluxLevel,
         glitchesCaught,
         unlockedAchievements,
+        runStartTime: runStartTimeRef.current,
+        firstPlayTime: firstPlayTimeRef.current,
+        lifetimeManualOps: lifetimeManualOpsRef.current,
+        lifetimePassiveOps: lifetimePassiveOpsRef.current,
         lastActiveTimestamp: Date.now(),
       };
       localStorage.setItem('gameState', JSON.stringify(stateToSave));
@@ -1918,6 +1980,15 @@ export default function App() {
         const loadedGlitchesCaught = typeof parsed.glitchesCaught === 'number' ? parsed.glitchesCaught : 0;
         const loadedAchievements = Array.isArray(parsed.unlockedAchievements) ? parsed.unlockedAchievements : [];
 
+        // Statistics telemetry
+        const now = Date.now();
+        const loadedRunStartTime = typeof parsed.runStartTime === 'number' ? parsed.runStartTime : now;
+        const loadedFirstPlayTime = typeof parsed.firstPlayTime === 'number'
+          ? parsed.firstPlayTime
+          : (typeof parsed.lastActiveTimestamp === 'number' ? parsed.lastActiveTimestamp - 60000 : now);
+        const loadedManualOps = typeof parsed.lifetimeManualOps === 'number' ? parsed.lifetimeManualOps : 0;
+        let loadedPassiveOps = typeof parsed.lifetimePassiveOps === 'number' ? parsed.lifetimePassiveOps : Math.max(0, loadedLifetimeOps - loadedManualOps);
+
         // Recalculate true rate from counts + sub-upgrades + quantum bonuses + flux + achievements
         const recalculatedRate = calculateTotalOpsPerSecond(
           loadedCounts,
@@ -1932,13 +2003,13 @@ export default function App() {
         // Offline Matrix Simulation (if perk unlocked)
         const offlineLevel = loadedQuantumPerks['perk-offline'] || 0;
         if (offlineLevel > 0 && typeof parsed.lastActiveTimestamp === 'number') {
-          const now = Date.now();
           const elapsedSeconds = Math.min(24 * 3600, Math.max(0, (now - parsed.lastActiveTimestamp) / 1000));
           if (elapsedSeconds >= 10 && recalculatedRate > 0) {
             const efficiency = offlineLevel === 3 ? 1.0 : offlineLevel === 2 ? 0.75 : 0.5;
             const offlineYield = Math.floor(recalculatedRate * elapsedSeconds * efficiency);
             loadedOps += offlineYield;
             loadedLifetimeOps += offlineYield;
+            loadedPassiveOps += offlineYield;
             setOfflineReport({ show: true, ops: offlineYield, timeSec: elapsedSeconds });
           }
         }
@@ -1953,6 +2024,10 @@ export default function App() {
         setQuantumFluxLevel(loadedQuantumFluxLevel);
         setGlitchesCaught(loadedGlitchesCaught);
         setUnlockedAchievements(loadedAchievements);
+        setRunStartTime(loadedRunStartTime);
+        setFirstPlayTime(loadedFirstPlayTime);
+        setLifetimeManualOps(loadedManualOps);
+        setLifetimePassiveOps(loadedPassiveOps);
 
         totalOpsRef.current = loadedOps;
         lifetimeOpsRef.current = loadedLifetimeOps;
@@ -1961,6 +2036,10 @@ export default function App() {
         glitchesCaughtRef.current = loadedGlitchesCaught;
         unlockedAchievementsRef.current = loadedAchievements;
         quantumPerksRef.current = loadedQuantumPerks;
+        runStartTimeRef.current = loadedRunStartTime;
+        firstPlayTimeRef.current = loadedFirstPlayTime;
+        lifetimeManualOpsRef.current = loadedManualOps;
+        lifetimePassiveOpsRef.current = loadedPassiveOps;
 
         if (parsed.clickCount) setClickCount(parsed.clickCount);
         setUpgradeCounts(loadedCounts);
@@ -2096,8 +2175,10 @@ export default function App() {
 
     totalOpsRef.current += clickGain;
     lifetimeOpsRef.current += clickGain;
+    lifetimeManualOpsRef.current += clickGain;
     setTotalOps(totalOpsRef.current);
     setLifetimeOps(lifetimeOpsRef.current);
+    setLifetimeManualOps(lifetimeManualOpsRef.current);
 
     setClickCount((prev) => prev + 1);
     setIsOverclocking(true);
@@ -2386,8 +2467,10 @@ export default function App() {
       const baseYield = Math.max(500, Math.round(opsPerSecondRef.current * 600));
       totalOpsRef.current += baseYield;
       lifetimeOpsRef.current += baseYield;
+      lifetimePassiveOpsRef.current += baseYield;
       setTotalOps(totalOpsRef.current);
       setLifetimeOps(lifetimeOpsRef.current);
+      setLifetimePassiveOps(lifetimePassiveOpsRef.current);
 
       setGlitchToast({
         title: 'QUANTUM BURST EXTRACTED!',
@@ -2422,6 +2505,9 @@ export default function App() {
     // Reset current run stats
     totalOpsRef.current = 0;
     setTotalOps(0);
+    const now = Date.now();
+    runStartTimeRef.current = now;
+    setRunStartTime(now);
 
     // Reset thermal state on rebirth
     heatLevelRef.current = 0;
@@ -2502,6 +2588,7 @@ export default function App() {
     try {
       localStorage.removeItem('gameState');
     } catch {}
+    const now = Date.now();
     setTotalOps(0);
     setLifetimeOps(0);
     setOpsPerSecond(0);
@@ -2518,6 +2605,10 @@ export default function App() {
     setHeatLevel(0);
     setIsOverheated(false);
     setOverheatCooldownRemaining(0);
+    setRunStartTime(now);
+    setFirstPlayTime(now);
+    setLifetimeManualOps(0);
+    setLifetimePassiveOps(0);
     totalOpsRef.current = 0;
     lifetimeOpsRef.current = 0;
     opsPerSecondRef.current = 0;
@@ -2528,6 +2619,10 @@ export default function App() {
     heatLevelRef.current = 0;
     isOverheatedRef.current = false;
     overheatCooldownRef.current = 0;
+    runStartTimeRef.current = now;
+    firstPlayTimeRef.current = now;
+    lifetimeManualOpsRef.current = 0;
+    lifetimePassiveOpsRef.current = 0;
     setShowRestartConfirm(false);
     resumeGame();
   };
@@ -2574,6 +2669,7 @@ export default function App() {
           const generated = opsPerSecondRef.current * deltaTime;
           totalOpsRef.current += generated;
           lifetimeOpsRef.current += generated;
+          lifetimePassiveOpsRef.current += generated;
         }
 
         // Overheat and Thermal Dissipation handling
@@ -2598,7 +2694,6 @@ export default function App() {
         // Frenzy countdown handler
         if (frenzyRemainingRef.current > 0) {
           frenzyRemainingRef.current = Math.max(0, frenzyRemainingRef.current - deltaTime);
-          setFrenzyRemaining(frenzyRemainingRef.current);
           if (frenzyRemainingRef.current <= 0) {
             // Restore normal non-frenzy rate
             const normalRate = calculateTotalOpsPerSecond(
@@ -2655,7 +2750,10 @@ export default function App() {
         if (timestamp - lastUiUpdate >= 50) {
           setTotalOps(totalOpsRef.current);
           setLifetimeOps(lifetimeOpsRef.current);
+          setLifetimePassiveOps(lifetimePassiveOpsRef.current);
+          setLifetimeManualOps(lifetimeManualOpsRef.current);
           setHeatLevel(heatLevelRef.current);
+          setFrenzyRemaining(frenzyRemainingRef.current);
           if (isOverheatedRef.current) {
             setOverheatCooldownRemaining(overheatCooldownRef.current);
           }
@@ -2815,6 +2913,25 @@ export default function App() {
               <span className="tracking-wider leading-none">ACHIEVEMENTS</span>
               <span className="text-[10px] text-emerald-400 mt-0.5 font-bold">
                 {unlockedAchievements.length}/{ACHIEVEMENTS.length} (+{unlockedAchievements.length}% OPS)
+              </span>
+            </div>
+          </button>
+
+          {/* Statistics Ledger Trigger Button */}
+          <button
+            id="open-statistics-btn"
+            onClick={() => {
+              setShowStatsModal(true);
+              playCyberSound('click');
+            }}
+            className="px-3.5 py-2 rounded-xl font-mono text-xs font-semibold flex items-center gap-2 transition-all cursor-pointer bg-slate-950 text-slate-200 hover:text-white border border-slate-800 hover:border-cyan-500/50 hover:shadow-[0_0_15px_rgba(0,242,254,0.25)]"
+            title="System Statistics and Efficiency Ledger"
+          >
+            <BarChart3 className="w-4 h-4 text-cyan-400" />
+            <div className="flex flex-col text-left">
+              <span className="tracking-wider leading-none">STATISTICS</span>
+              <span className="text-[10px] text-cyan-300 mt-0.5 font-bold">
+                {lifetimeOps > 0 ? `${((lifetimePassiveOps / Math.max(1, lifetimeOps)) * 100).toFixed(0)}% Passive` : 'Ledger Active'}
               </span>
             </div>
           </button>
@@ -3039,7 +3156,7 @@ export default function App() {
               <div className="w-full h-2 rounded-full bg-slate-950 overflow-hidden border border-slate-800 relative">
                 <div
                   style={{ width: `${Math.min(100, Math.max(0, heatLevel))}%` }}
-                  className={`h-full transition-all duration-100 ${
+                  className={`h-full transition-all duration-75 ease-linear ${
                     isOverheated
                       ? 'bg-gradient-to-r from-rose-500 to-red-600 animate-pulse'
                       : heatLevel > 75
@@ -3418,7 +3535,9 @@ export default function App() {
                 const isJustPurchased = recentPurchased === item.id;
                 const IconComponent = item.icon;
                 const hardwareMult = getHardwareMultiplier(item.id, purchasedSubUpgrades);
-                const effectiveRateEach = item.opsIncrease * hardwareMult;
+                const milestoneInfo = getNextHardwareMilestone(count);
+                const milestoneMultiplier = milestoneInfo.currentMultiplier;
+                const effectiveRateEach = item.opsIncrease * hardwareMult * milestoneMultiplier;
                 const buyAmountLabel = multiInfo.isMax
                   ? `+${multiInfo.actualBuyCount} (MAX)`
                   : `+${multiInfo.countToBuy}`;
@@ -3472,21 +3591,36 @@ export default function App() {
                                 LVL {count}
                               </span>
                             )}
+                            {milestoneMultiplier > 1 && (
+                              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-md bg-amber-950/90 border border-amber-500/50 text-amber-300 font-bold">
+                                Milestone: {milestoneMultiplier}x
+                              </span>
+                            )}
                             {hardwareMult > 1 && (
                               <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-md bg-purple-950 text-purple-300 font-bold">
-                                {hardwareMult}x BOOSTED
+                                {hardwareMult}x FIRMWARE
                               </span>
                             )}
                           </div>
 
-                          {/* Primary Positive Yield in Emerald */}
-                          <div className="flex items-center gap-2 mt-1 flex-wrap">
+                          {/* Primary Positive Yield & Milestone Tracking */}
+                          <div className="flex items-center gap-2.5 mt-1 flex-wrap">
                             <span className="text-xs font-mono font-bold text-emerald-400 flex items-center gap-1">
-                              +{effectiveRateEach} OPS/s
+                              +{formatOps(effectiveRateEach)} OPS/s
                             </span>
                             {count > 0 && (
                               <span className="text-[10px] font-mono text-slate-500">
                                 (+{formatOps(effectiveRateEach * count)}/s total)
+                              </span>
+                            )}
+                            <span className="text-slate-600 text-[10px]">•</span>
+                            {milestoneInfo.isMax ? (
+                              <span className="text-[10px] font-mono text-amber-400 font-bold">
+                                ★ MAX MILESTONE (128x)
+                              </span>
+                            ) : (
+                              <span className="text-[10px] font-mono text-slate-400">
+                                Next at {milestoneInfo.nextMilestone} ({count}/{milestoneInfo.nextMilestone})
                               </span>
                             )}
                           </div>
@@ -4616,6 +4750,310 @@ export default function App() {
               <p className="text-[11px] text-slate-300 mt-0.5">
                 {achievementToast.description}
               </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* SYSTEM STATISTICS & EFFICIENCY LEDGER MODAL */}
+      {/* ========================================================================= */}
+      {showStatsModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-md animate-in fade-in duration-200">
+          <div
+            id="statistics-modal"
+            className="w-full max-w-4xl max-h-[90vh] bg-slate-900 border-2 border-cyan-500/80 rounded-2xl shadow-[0_0_50px_rgba(0,242,254,0.35)] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200 font-mono"
+          >
+            {/* Modal Header */}
+            <div className="p-5 bg-slate-950/90 border-b border-cyan-500/30 flex items-center justify-between flex-wrap gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-cyan-950/80 border border-cyan-500/60 flex items-center justify-center text-cyan-400 shadow-[0_0_15px_rgba(0,242,254,0.4)]">
+                  <BarChart3 className="w-6 h-6" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-lg md:text-xl font-bold tracking-wide text-white font-display">
+                      SYSTEM TELEMETRY & EFFICIENCY LEDGER
+                    </h2>
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-600/60 uppercase">
+                      Live Telemetry
+                    </span>
+                  </div>
+                  <p className="text-xs text-cyan-300/80">
+                    Comprehensive analytical breakdown of silicon manufacturing operations & yield efficiency.
+                  </p>
+                </div>
+              </div>
+
+              <button
+                id="close-statistics-modal-btn"
+                onClick={() => {
+                  setShowStatsModal(false);
+                  playCyberSound('click');
+                }}
+                className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition-all cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Content Scroll Area */}
+            <div className="p-6 overflow-y-auto space-y-6 flex-1 text-slate-200">
+              
+              {/* SECTION 1: Chrono & Temporal Metrics */}
+              <div className="space-y-3">
+                <div className="flex items-center gap-2 text-xs font-bold text-cyan-400 uppercase tracking-wider">
+                  <Timer className="w-4 h-4" />
+                  <span>Chrono & Operational Time Metrics</span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div className="p-3.5 rounded-xl bg-slate-950/70 border border-slate-800 flex flex-col justify-between">
+                    <span className="text-[11px] text-slate-400 uppercase">Total System Uptime</span>
+                    <div className="text-lg md:text-xl font-bold text-white font-mono mt-1">
+                      {formatDuration(Date.now() - firstPlayTime)}
+                    </div>
+                    <span className="text-[10px] text-slate-500 mt-1">Since first activation</span>
+                  </div>
+
+                  <div className="p-3.5 rounded-xl bg-slate-950/70 border border-slate-800 flex flex-col justify-between">
+                    <span className="text-[11px] text-slate-400 uppercase">Current Cycle Duration</span>
+                    <div className="text-lg md:text-xl font-bold text-cyan-300 font-mono mt-1">
+                      {formatDuration(Date.now() - runStartTime)}
+                    </div>
+                    <span className="text-[10px] text-slate-500 mt-1">Active run time</span>
+                  </div>
+
+                  <div className="p-3.5 rounded-xl bg-slate-950/70 border border-slate-800 flex flex-col justify-between">
+                    <span className="text-[11px] text-slate-400 uppercase">Quantum Rebirths</span>
+                    <div className="text-lg md:text-xl font-bold text-purple-300 font-mono mt-1">
+                      {rebirthCount.toLocaleString()} Cycles
+                    </div>
+                    <span className="text-[10px] text-slate-500 mt-1">Foundry resets performed</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* SECTION 2: Yield Distribution (Manual vs. Passive) */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <div className="flex items-center gap-2 text-xs font-bold text-cyan-400 uppercase tracking-wider">
+                    <PieChart className="w-4 h-4" />
+                    <span>Silicon Yield Breakdown (Manual vs. Passive)</span>
+                  </div>
+                  <span className="text-xs text-slate-400 font-mono">
+                    Lifetime Total: <strong className="text-emerald-400 font-bold">{formatOps(lifetimeOps)} OPS</strong>
+                  </span>
+                </div>
+
+                {(() => {
+                  const total = Math.max(1, lifetimeOps);
+                  const manualPct = Math.min(100, Math.max(0, (lifetimeManualOps / total) * 100));
+                  const passivePct = Math.min(100, Math.max(0, (lifetimePassiveOps / total) * 100));
+
+                  return (
+                    <div className="p-4 rounded-xl bg-slate-950/80 border border-slate-800 space-y-4">
+                      {/* Visual Dual-Tone Progress Bar */}
+                      <div className="space-y-1.5">
+                        <div className="flex justify-between text-xs font-mono">
+                          <span className="text-cyan-400 flex items-center gap-1.5 font-bold">
+                            <span className="w-2.5 h-2.5 rounded-full bg-cyan-400 inline-block"></span>
+                            Manual Synthesis: {manualPct.toFixed(1)}% ({formatOps(lifetimeManualOps)} OPS)
+                          </span>
+                          <span className="text-emerald-400 flex items-center gap-1.5 font-bold">
+                            <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 inline-block"></span>
+                            Automated Synthesis: {passivePct.toFixed(1)}% ({formatOps(lifetimePassiveOps)} OPS)
+                          </span>
+                        </div>
+                        
+                        <div className="w-full h-3 rounded-full bg-slate-800 overflow-hidden flex">
+                          <div
+                            style={{ width: `${manualPct}%` }}
+                            className="h-full bg-cyan-400 transition-all duration-300"
+                            title={`Manual: ${manualPct.toFixed(1)}%`}
+                          />
+                          <div
+                            style={{ width: `${passivePct}%` }}
+                            className="h-full bg-emerald-400 transition-all duration-300"
+                            title={`Passive: ${passivePct.toFixed(1)}%`}
+                          />
+                        </div>
+                      </div>
+
+                      {/* Manual & Click Diagnostics */}
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2 border-t border-slate-800/80 text-xs">
+                        <div>
+                          <span className="text-[10px] text-slate-500 uppercase block">Total Manual Clicks</span>
+                          <span className="text-sm font-bold text-white font-mono">{clickCount.toLocaleString()}</span>
+                        </div>
+                        <div>
+                          <span className="text-[10px] text-slate-500 uppercase block">Avg Ops / Tap</span>
+                          <span className="text-sm font-bold text-cyan-300 font-mono">
+                            {clickCount > 0 ? formatOps(lifetimeManualOps / clickCount) : '0'}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-[10px] text-slate-500 uppercase block">Base Tap Power</span>
+                          <span className="text-sm font-bold text-amber-300 font-mono">
+                            {formatOps(getEffectiveClickPower())} OPS
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-[10px] text-slate-500 uppercase block">Crit Strike Rate</span>
+                          <span className="text-sm font-bold text-red-400 font-mono">
+                            {(getCritChance() * 100).toFixed(1)}% (5x Multiplier)
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+
+              {/* SECTION 3: Hardware Efficiency & Top Earner Analysis */}
+              <div className="space-y-3">
+                {(() => {
+                  // Calculate each hardware item's current effective rate
+                  const hardwareStats = UPGRADES.map((item) => {
+                    const count = upgradeCounts[item.id] || 0;
+                    const subMult = getHardwareMultiplier(item.id, purchasedSubUpgrades);
+                    const milestoneInfo = getNextHardwareMilestone(count);
+                    const itemRateEach = item.opsIncrease * subMult * milestoneInfo.currentMultiplier;
+                    const totalTierRate = count * itemRateEach;
+                    return {
+                      item,
+                      count,
+                      subMult,
+                      milestoneInfo,
+                      itemRateEach,
+                      totalTierRate,
+                    };
+                  });
+
+                  const totalBaseHardwareRate = hardwareStats.reduce((sum, h) => sum + h.totalTierRate, 0);
+                  const activeHardware = hardwareStats.filter((h) => h.count > 0);
+                  const topEarner = activeHardware.reduce<typeof hardwareStats[0] | null>(
+                    (max, cur) => (!max || cur.totalTierRate > max.totalTierRate ? cur : max),
+                    null
+                  );
+
+                  return (
+                    <>
+                      <div className="flex items-center justify-between flex-wrap gap-2">
+                        <div className="flex items-center gap-2 text-xs font-bold text-cyan-400 uppercase tracking-wider">
+                          <Cpu className="w-4 h-4" />
+                          <span>Hardware Efficiency & Production Share</span>
+                        </div>
+                        {topEarner && totalBaseHardwareRate > 0 && (
+                          <span className="text-xs font-mono text-amber-300 bg-amber-950/80 px-2.5 py-0.5 rounded-md border border-amber-500/40 font-bold">
+                            Top Earner: {topEarner.item.name} ({((topEarner.totalTierRate / totalBaseHardwareRate) * 100).toFixed(1)}% of output)
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="p-4 rounded-xl bg-slate-950/80 border border-slate-800 space-y-3">
+                        {activeHardware.length === 0 ? (
+                          <div className="text-center py-6 text-slate-500 text-xs font-mono">
+                            No hardware units deployed yet in current cycle.
+                          </div>
+                        ) : (
+                          <div className="space-y-3">
+                            {activeHardware
+                              .sort((a, b) => b.totalTierRate - a.totalTierRate)
+                              .map(({ item, count, subMult, milestoneInfo, totalTierRate }) => {
+                                const sharePct = totalBaseHardwareRate > 0 ? (totalTierRate / totalBaseHardwareRate) * 100 : 0;
+                                const IconComponent = item.icon;
+
+                                return (
+                                  <div key={item.id} className="p-2.5 rounded-lg bg-slate-900/60 border border-slate-800/80 space-y-1.5">
+                                    <div className="flex items-center justify-between flex-wrap gap-2 text-xs">
+                                      <div className="flex items-center gap-2">
+                                        <div
+                                          style={{ color: item.color, backgroundColor: `${item.color}15`, borderColor: `${item.color}40` }}
+                                          className="w-6 h-6 rounded border flex items-center justify-center flex-shrink-0"
+                                        >
+                                          <IconComponent className="w-3.5 h-3.5" />
+                                        </div>
+                                        <span className="font-bold text-white">{item.name}</span>
+                                        <span className="text-[10px] text-slate-400 font-mono">x{count}</span>
+                                        {milestoneInfo.currentMultiplier > 1 && (
+                                          <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-amber-950 text-amber-300 border border-amber-600/50">
+                                            {milestoneInfo.currentMultiplier}x Milestone
+                                          </span>
+                                        )}
+                                        {subMult > 1 && (
+                                          <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-purple-950 text-purple-300 border border-purple-600/50">
+                                            {subMult}x Firmware
+                                          </span>
+                                        )}
+                                      </div>
+
+                                      <div className="flex items-center gap-3 font-mono">
+                                        <span className="text-emerald-400 font-bold">
+                                          +{formatOps(totalTierRate)}/s
+                                        </span>
+                                        <span className="text-slate-400 text-[11px] w-12 text-right">
+                                          {sharePct.toFixed(1)}%
+                                        </span>
+                                      </div>
+                                    </div>
+
+                                    {/* Share mini-bar */}
+                                    <div className="w-full h-1.5 rounded-full bg-slate-800 overflow-hidden">
+                                      <div
+                                        style={{ width: `${sharePct}%`, backgroundColor: item.color }}
+                                        className="h-full transition-all duration-300"
+                                      />
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  );
+                })()}
+              </div>
+
+              {/* SECTION 4: Quantum & Meta Telemetry */}
+              <div className="space-y-3">
+                <div className="flex items-center gap-2 text-xs font-bold text-cyan-400 uppercase tracking-wider">
+                  <Atom className="w-4 h-4" />
+                  <span>Quantum Matrix & Multiplier Diagnostics</span>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800">
+                    <span className="text-[10px] text-slate-400 uppercase block">Golden Glitches</span>
+                    <span className="text-sm font-bold text-amber-400 font-mono mt-0.5 block">
+                      {glitchesCaught.toLocaleString()} Intercepted
+                    </span>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800">
+                    <span className="text-[10px] text-slate-400 uppercase block">Q-Wafers Banked</span>
+                    <span className="text-sm font-bold text-purple-300 font-mono mt-0.5 block">
+                      {qWafers} (+{((getQuantumWaferMultiplier() - 1) * 100).toFixed(0)}%)
+                    </span>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800">
+                    <span className="text-[10px] text-slate-400 uppercase block">Flux Resonator</span>
+                    <span className="text-sm font-bold text-cyan-300 font-mono mt-0.5 block">
+                      LVL {quantumFluxLevel} (+{quantumFluxLevel * 10}%)
+                    </span>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800">
+                    <span className="text-[10px] text-slate-400 uppercase block">Achievement Boost</span>
+                    <span className="text-sm font-bold text-emerald-400 font-mono mt-0.5 block">
+                      +{unlockedAchievements.length}% Global
+                    </span>
+                  </div>
+                </div>
+              </div>
+
             </div>
           </div>
         </div>
